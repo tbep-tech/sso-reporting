@@ -1,24 +1,24 @@
 ---
-title: 'Tampa Bay SSO reporting'
-title-block-banner: true
+title: "Tampa Bay SSO reporting" 
 date: "`r Sys.Date()`"
 format:
   html:
-    theme: cosmo
-    code_fold: true
+    code-fold: true
     code-copy: true
     code-link: true
-    code_tools:
+    code-tools:
       source: https://github.com/tbep-tech/sso-reporting/docs/sso-reporting.qmd
+editor: source
 css: styles.css
-
 lightbox: true
+
 execute: 
   warning: false
-message: false
+  message: false
+  echo: true
 ---
 
-The following is an evaluation of FDEP spill incident reports for Tampa Bay, available at <https://prodenv.dep.state.fl.us/DepPNP/reports/viewIncidentDetails>, downloaded on *2024-12-04*. The workflow borrows from a previous analysis [here](https://tbep-tech.github.io/piney-point-analysis/spills).
+The following is an evaluation of FDEP spill incident reports for Tampa Bay, available at <https://prodenv.dep.state.fl.us/DepPNP/reports/viewIncidentDetails>, downloaded on __2024-12-04__. The workflow borrows from a previous analysis [here](https://tbep-tech.github.io/piney-point-analysis/spills).
 
 ::: {.callout-warning}
 ## Caveats
@@ -66,16 +66,19 @@ mapbs |>
     color = 'blue', 
     stroke = FALSE, 
     fillOpacity = 0.5, 
-    label = ~id, 
-    popup = ~descrip
+    label = ~date, 
+    popup = leafpop::popupTable(rprt, 
+                                zcol = c('date', 'descrip', 'facility', 'county'), 
+                                row.numbers = F, 
+                                feature.id = F)
   )
 ```
 
 Counts of reports by year and county.
 
 ```{r}
-toplo <- rprt %>%
-  group_by(yr, county) %>%
+toplo <- rprt |>
+  group_by(yr, county) |>
   summarise(cnt = n(), .groups = 'drop')
 tots <- sum(toplo$cnt)
 ggplot(toplo, aes(x = yr, y = cnt, fill = county)) +
@@ -88,132 +91,138 @@ ggplot(toplo, aes(x = yr, y = cnt, fill = county)) +
   )
 ```
 
-<!-- Spill volumes, if reported, can be identified in the description column for each incident.  These values were extracted from the text using [regular expression](https://en.wikipedia.org/wiki/Regular_expression) matching to identify numeric characters that were preceded by "volume" or followed by "gallons".  Records without any numeric characters in the description were first removed.  Incidents with more than one occurrence of "gallon" text strings were also removed because of ambiguity over which value referred to the spill. No information about pollutants or other parameters are provided in the description.  -->
+Spill volumes, if reported, can be identified in the description column for each incident.  These values were extracted from the text using [regular expression](https://en.wikipedia.org/wiki/Regular_expression) matching to identify numeric characters that were preceded by "volume" or followed by "gallons".  Records without any numeric characters in the description were first removed.  Incidents with more than one occurrence of "gallon" text strings were also removed because of ambiguity over which value referred to the spill. No information about pollutants or other parameters are provided in the description.
 
-<!-- ```{r} -->
-<!-- vols <- rprt %>%  -->
-<!--   st_set_geometry(NULL) %>%  -->
-<!--   filter(grepl('[0-9]', descrip)) %>%  -->
-<!--   mutate( -->
-<!--     descrip = gsub('\\,', '', descrip),  -->
-<!--     descrip = tolower(descrip), -->
-<!--     hasgal = grepl('gallon', descrip),  -->
-<!--     hasvol = grepl('spill\\svolume:\\s', descrip),  -->
-<!--     galcnt = str_count(descrip, 'gallon') -->
-<!--   ) %>%  -->
-<!--   filter(hasvol | hasgal) %>% -->
-<!--   filter(galcnt == 1 | hasvol) %>%  -->
-<!--   mutate( -->
-<!--     volest = case_when( -->
-<!--       hasvol & !hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),  -->
-<!--       hasvol & hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),  -->
-<!--       hasgal & !hasvol ~ gsub('^.*\\s(\\d+\\sgallon).*$', '\\1', descrip) -->
-<!--     ),  -->
-<!--     volest = gsub('gallon|gallons|spill\\svolume:', '', volest), -->
-<!--     volest = as.numeric(volest) -->
-<!--   ) %>%  -->
-<!--   filter(!is.na(volest)) %>%  -->
-<!--   mutate( -->
-<!--     modt = floor_date(date, unit = 'months') -->
-<!--   ) -->
+```{r}
+vols <- rprt |>
+  st_set_geometry(NULL) |>
+  filter(grepl('[0-9]', descrip)) |>
+  mutate(
+    descrip = gsub('\\,', '', descrip),
+    descrip = tolower(descrip),
+    hasgal = grepl('gallon', descrip),
+    hasvol = grepl('spill\\svolume:\\s', descrip),
+    galcnt = str_count(descrip, 'gallon')
+  ) |>
+  filter(hasvol | hasgal) |>
+  # filter(id == 20227145) |> 
+  rowwise() |> 
+  # filter(galcnt == 1 | hasvol) |>
+  mutate(
+    volest = case_when(
+      hasvol & !hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),
+      hasvol & hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),
+      # hasgal & !hasvol ~ str_extract_all(descrip, "\\d+\\s*gallons?")[[1]] |>
+      #   str_extract("\\d+") |> 
+      #   as.numeric() |> 
+      #   max() |> 
+      #   as.character()
+    ),
+    volest = gsub('gallon|gallons|spill\\svolume:', '', volest),
+    # volest = as.numeric(volest)
+  ) |>
+  filter(!is.na(volest)) |>
+  mutate(
+    modt = floor_date(date, unit = 'months')
+  )
 
-<!-- # this one was verified as being wrong -->
-<!-- vols <- vols %>%  -->
-<!--   filter(volest != max(volest)) -->
+# this one was verified as being wrong
+vols <- vols |>
+  filter(volest != max(volest))
 
-<!-- head(vols) -->
-<!-- ``` -->
+head(vols)
+```
 
-<!-- Now plots can be made showing total volume spilled over time. Plots are shown for totals and by county. -->
+Now plots can be made showing total volume spilled over time. Plots are shown for totals and by county.
 
-<!-- ```{r} -->
-<!-- toplo <- vols %>%  -->
-<!--   group_by(modt) %>%  -->
-<!--   summarise(volest = sum(volest), .groups = 'drop') %>%  -->
-<!--   mutate(volest = volest / 1000) -->
-<!-- tots <- nrow(vols) -->
+```{r}
+toplo <- vols |>
+  group_by(modt) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1000)
+tots <- nrow(vols)
 
-<!-- ggplot(toplo, aes(x = modt, y = volest)) +  -->
-<!--   geom_bar(stat = 'identity', alpha = 0.7) +  -->
-<!--   thm +  -->
-<!--   scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') + -->
-<!--   theme( -->
-<!--     axis.text.x = element_text(size = 7, angle = 45, hjust = 1) -->
-<!--   ) + -->
-<!--   labs( -->
-<!--     x = NULL,  -->
-<!--     y = '1000 gallons spilled',  -->
-<!--     caption = paste('n = ', tots) -->
-<!--   ) -->
-<!-- ``` -->
+ggplot(toplo, aes(x = modt, y = volest)) +
+  geom_bar(stat = 'identity', alpha = 0.7) +
+  thm +
+  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = NULL,
+    y = '1000 gallons spilled',
+    caption = paste('n = ', tots)
+  )
+```
 
-<!-- ```{r} -->
-<!-- toplo <- vols %>%  -->
-<!--   group_by(modt, county) %>%  -->
-<!--   summarise(volest = sum(volest), .groups = 'drop') %>%  -->
-<!--   mutate(volest = volest / 1000) -->
-<!-- tots <- nrow(vols) -->
+```{r}
+toplo <- vols |>
+  group_by(modt, county) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1000)
+tots <- nrow(vols)
 
-<!-- ggplot(toplo, aes(x = modt, y = volest, fill = county)) +  -->
-<!--   geom_bar(stat = 'identity', alpha = 0.7) +  -->
-<!--   thm +  -->
-<!--   scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') + -->
-<!--   theme( -->
-<!--     axis.text.x = element_text(size = 7, angle = 45, hjust = 1) -->
-<!--   ) + -->
-<!--   labs( -->
-<!--     x = NULL,  -->
-<!--     y = '1000 gallons spilled',  -->
-<!--     caption = paste('n = ', tots) -->
-<!--   ) -->
-<!-- ``` -->
+ggplot(toplo, aes(x = modt, y = volest, fill = county)) +
+  geom_bar(stat = 'identity', alpha = 0.7) +
+  thm +
+  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = NULL,
+    y = '1000 gallons spilled',
+    caption = paste('n = ', tots)
+  )
+```
 
-<!-- Because spill volumes from the "gallons" text string may be suspect, it may be more accurate to plot only those gallons reported with the "spill volume" text string.  -->
+Because spill volumes from the "gallons" text string may be suspect, it may be more accurate to plot only those gallons reported with the "spill volume" text string.
 
-<!-- ```{r} -->
-<!-- toplo <- vols %>%  -->
-<!--   filter(hasvol) %>%  -->
-<!--   group_by(modt, county) %>%  -->
-<!--   summarise(volest = sum(volest), .groups = 'drop') %>%  -->
-<!--   mutate(volest = volest / 1000) -->
-<!-- tots <- vols %>%  -->
-<!--   filter(hasvol) %>%  -->
-<!--   nrow() -->
+```{r}
+toplo <- vols |>
+  filter(hasvol) |>
+  group_by(modt, county) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1000)
+tots <- vols |>
+  filter(hasvol) |>
+  nrow()
 
-<!-- ggplot(toplo, aes(x = modt, y = volest)) +  -->
-<!--   geom_bar(stat = 'identity', alpha = 0.7) +  -->
-<!--   thm +  -->
-<!--   scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') + -->
-<!--   theme( -->
-<!--     axis.text.x = element_text(size = 9, angle = 45, hjust = 1) -->
-<!--   ) + -->
-<!--   labs( -->
-<!--     x = NULL,  -->
-<!--     y = '1000 gallons spilled',  -->
-<!--     caption = paste('n = ', tots) -->
-<!--   ) -->
-<!-- ``` -->
+ggplot(toplo, aes(x = modt, y = volest)) +
+  geom_bar(stat = 'identity', alpha = 0.7) +
+  thm +
+  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = NULL,
+    y = '1000 gallons spilled',
+    caption = paste('n = ', tots)
+  )
+```
 
-<!-- ```{r} -->
-<!-- toplo <- vols %>%  -->
-<!--   filter(hasvol) %>%  -->
-<!--   group_by(modt, county) %>%  -->
-<!--   summarise(volest = sum(volest), .groups = 'drop') %>%  -->
-<!--   mutate(volest = volest / 1000) -->
-<!-- tots <- vols %>%  -->
-<!--   filter(hasvol) %>%  -->
-<!--   nrow() -->
+```{r}
+toplo <- vols |>
+  filter(hasvol) |>
+  group_by(modt, county) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1000)
+tots <- vols |>
+  filter(hasvol) |>
+  nrow()
 
-<!-- ggplot(toplo, aes(x = modt, y = volest, fill = county)) +  -->
-<!--   geom_bar(stat = 'identity', alpha = 0.7) +  -->
-<!--   thm +  -->
-<!--   scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') + -->
-<!--   theme( -->
-<!--     axis.text.x = element_text(size = 9, angle = 45, hjust = 1) -->
-<!--   ) + -->
-<!--   labs( -->
-<!--     x = NULL,  -->
-<!--     y = '1000 gallons spilled',  -->
-<!--     caption = paste('n = ', tots) -->
-<!--   ) -->
-<!-- ``` -->
+ggplot(toplo, aes(x = modt, y = volest, fill = county)) +
+  geom_bar(stat = 'identity', alpha = 0.7) +
+  thm +
+  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = NULL,
+    y = '1000 gallons spilled',
+    caption = paste('n = ', tots)
+  )
+```
