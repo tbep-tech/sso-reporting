@@ -30,27 +30,34 @@ get_dat <- function(offset = 0, max_rec) {
   req <- GET(base_url, query = query_params)
   dat <- st_read(rawToChar(req$content), quiet = TRUE)
   
-  list(
+  out <- list(
     dat = dat,
     n_rec = nrow(dat)
   )
+  
+  return(out)
+  
 }
 
 # Retrieve data dynamically
 all_dat <- NULL
 offset <- 0
-max_rec <- 2
+max_rec <- 10000
 
 repeat {
+  
   cat('offset', offset, '\n')
+  
   result <- get_dat(offset, max_rec)
-  all_dat <- rbind(all_dat, result$data)
+  all_dat <- rbind(all_dat, result$dat)
   
   if (result$n_rec < max_rec){
     cat('done!\n')
     break
   }
+  
   offset <- offset + max_rec
+  
 }
 
 rawdat <- all_dat

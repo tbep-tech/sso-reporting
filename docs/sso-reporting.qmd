@@ -16,14 +16,8 @@ execute:
   warning: false
   message: false
   echo: true
+  out-width: 100%
 ---
-
-The following is an evaluation of FDEP spill incident reports for Tampa Bay, available at <https://prodenv.dep.state.fl.us/DepPNP/reports/viewIncidentDetails>, downloaded on __2024-12-04__. The workflow borrows from a previous analysis [here](https://tbep-tech.github.io/piney-point-analysis/spills).
-
-::: {.callout-warning}
-## Caveats
-The source data is created via public input and has not been quality assured. All of the reported spill volumes extracted from the database have not been visually checked.  Only a handful were removed as being erroneous. Many spills also occur over several days and total volume per day may be much less than the maximum reported. 
-:::
 
 ```{r}
 # load packages
@@ -31,6 +25,7 @@ library(tidyverse)
 library(here)
 library(sf)
 library(leaflet)
+library(plotly)
 
 data(tbshed, package = 'tbeptools')
 load(here("data/rprt.RData"))
@@ -50,179 +45,377 @@ thm <- theme_minimal(base_size = 14) +
 mapbs <- tbeptools::util_map(rprt)
 ```
 
-The raw data have been filtered for Tampa Bay and only relevant columns have been retained.  The source code for creating the `rprt` object is [here](https://github.com/tbep-tech/R/dat_proc.R).
+The following is an evaluation of FDEP spill incident reports for Tampa Bay, available at <https://prodenv.dep.state.fl.us/DepPNP/reports/viewIncidentDetails>, downloaded on __2024-12-04__. The workflow borrows from a previous analysis [here](https://tbep-tech.github.io/piney-point-analysis/spills).
 
-```{r}
-head(rprt)
+::: {.callout-warning}
+## Caveats
+The source data is created via public input and has not been quality assured. All of the reported spill volumes extracted from the database have not been visually checked and some values may be erroneous.
+:::
+
+The raw data have been filtered for the Tampa Bay watershed and only relevant columns have been retained.  County estimates refer to only the portion of each county in the watershed. The source code for creating the data object is [here](https://github.com/tbep-tech/R/dat_proc.R) and includes `r nrow(rprt)` records from `r min(rprt$date)` to `r max(rprt$date)`.
+
+Spill volumes, if reported, can be extracted from the description column for each incident.  These values were extracted from the text using [regular expression](https://en.wikipedia.org/wiki/Regular_expression) matching to identify numeric characters that were preceded by "spill volume" or followed by "gallons" or "mg" for million gallons.  Records without any numeric characters in the description were first removed.  If spill volume was reported, the estimate is used independent of whether gallons or million gallons are present in the remainder of the description. Incidents with more than one occurrence of "gallon" text strings used the highest volume present and incidents with "mg" reported have values multiplied by one million.  If a text description included both gallons and million gallons, the former was used. No information about pollutants or other parameters are provided in the description.
+
+```{mermaid}
+flowchart TD
+    A[Raw Description Column] --> B{Contains Numeric\nCharacters?}
+    B -->|No| C[Remove Record]
+    B -->|Yes| D{Check Pattern Types}
+
+    D -->|None Found| C
+    D --> E1{Has 'spill volume:'?}
+    D --> E2{Has 'gallon'?}
+    D --> E3{Has 'mg'?}
+
+    E1 -->|Yes| F1[Extract number after\n'spill volume:' or\n'spill volume: estimated']
+    
+    E2 -->|Yes AND\nNo spill volume| F2[Extract all numbers\nbefore 'gallon']
+    
+    E3 -->|Yes AND\nNo gallon AND\nNo spill volume| F3[Extract numbers\nbefore 'mg'\nExclude 'mg/l']
+    
+    F2 --> G2[Take maximum if\nmultiple values]
+    F3 --> G3[Take maximum if\nmultiple values\nMultiply by 1e6]
+    
+    F1 --> H[Final Volume Value]
+    G2 --> H
+    G3 --> H
+    
+    H --> I{Is Value NA?}
+    I -->|Yes| C
+    I -->|No| J[Keep Record]
 ```
 
-Map of incident report locations. 
-
-```{r, out.width = '100%'}
-mapbs |> 
-  addCircleMarkers(
-    data = rprt,
-    radius = 3, 
-    color = 'blue', 
-    stroke = FALSE, 
-    fillOpacity = 0.5, 
-    label = ~date, 
-    popup = leafpop::popupTable(rprt, 
-                                zcol = c('date', 'descrip', 'facility', 'county'), 
-                                row.numbers = F, 
-                                feature.id = F)
-  )
-```
-
-Counts of reports by year and county.
 
 ```{r}
-toplo <- rprt |>
-  group_by(yr, county) |>
-  summarise(cnt = n(), .groups = 'drop')
-tots <- sum(toplo$cnt)
-ggplot(toplo, aes(x = yr, y = cnt, fill = county)) +
-  geom_bar(stat = 'identity', alpha = 0.7) +
-  thm +
-  labs(
-    x = NULL,
-    caption = paste0('Total n = ', tots),
-    y = 'Total reports'
-  )
-```
+# volume extraction function
+# if volume spilled is reported, extract, regardless of whether other gallons are reported
+# otherwise, take max numeric value for gallons
+extract_fun <- function(descrip, hasgal, hasvol, hasmlg) {
+  if(hasvol)
+    out <- str_extract(descrip, "(?<=spill volume:\\s)\\d+|(?<=spill volume:\\sestimated\\s)\\d+")
+  if(hasgal & !hasvol)
+    out <- str_extract_all(descrip, "\\d+\\s*gallons?")[[1]] |>
+      str_extract("\\d+")
+  if(hasmlg & !hasgal & !hasvol){
+    out <- gsub('mg\\/l', '', descrip)
+    out <- str_extract_all(out, "\\d*\\.?\\d+\\s*mg[\\.\\s]?")[[1]] |>
+      str_extract("\\d*\\.?\\d+")
+  }
+  if(length(out) != 0 & !anyNA(out))
+    out <- as.numeric(out) |> max()
+  else
+    out <- NA
+  if(hasmlg & !hasgal & !hasvol)
+    out <- out * 1e6
+  return(out)
+}
 
-Spill volumes, if reported, can be identified in the description column for each incident.  These values were extracted from the text using [regular expression](https://en.wikipedia.org/wiki/Regular_expression) matching to identify numeric characters that were preceded by "volume" or followed by "gallons".  Records without any numeric characters in the description were first removed.  Incidents with more than one occurrence of "gallon" text strings were also removed because of ambiguity over which value referred to the spill. No information about pollutants or other parameters are provided in the description.
-
-```{r}
+# extract volumes from descrip field
 vols <- rprt |>
-  st_set_geometry(NULL) |>
   filter(grepl('[0-9]', descrip)) |>
   mutate(
     descrip = gsub('\\,', '', descrip),
     descrip = tolower(descrip),
     hasgal = grepl('gallon', descrip),
     hasvol = grepl('spill\\svolume:\\s', descrip),
+    hasmlg = grepl('^.*\\d+\\smg\\.|^.*\\d+\\smg\\s', descrip),
     galcnt = str_count(descrip, 'gallon')
   ) |>
-  filter(hasvol | hasgal) |>
-  # filter(id == 20227145) |> 
-  rowwise() |> 
-  # filter(galcnt == 1 | hasvol) |>
+  filter(hasvol | hasgal | hasmlg) |>
   mutate(
-    volest = case_when(
-      hasvol & !hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),
-      hasvol & hasgal ~ gsub('^.*(spill\\svolume:\\s\\d+).*$', '\\1', descrip),
-      # hasgal & !hasvol ~ str_extract_all(descrip, "\\d+\\s*gallons?")[[1]] |>
-      #   str_extract("\\d+") |> 
-      #   as.numeric() |> 
-      #   max() |> 
-      #   as.character()
-    ),
-    volest = gsub('gallon|gallons|spill\\svolume:', '', volest),
-    # volest = as.numeric(volest)
+    idx = row_number()
+  ) |>
+  mutate(
+    volest = extract_fun(descrip, hasgal, hasvol, hasmlg),
+    .by = idx
   ) |>
   filter(!is.na(volest)) |>
   mutate(
     modt = floor_date(date, unit = 'months')
   )
-
-# this one was verified as being wrong
-vols <- vols |>
-  filter(volest != max(volest))
-
-head(vols)
 ```
 
-Now plots can be made showing total volume spilled over time. Plots are shown for totals and by county.
+Map of incident reports where volume estimates were extracted (n = `r nrow(vols)`, date ranges from `r min(vols$date)` to `r max(vols$date)`.
+
+```{r}
+mapbs |> 
+  addCircleMarkers(
+    data = vols,
+    radius = 3, 
+    color = 'blue', 
+    stroke = FALSE, 
+    fillOpacity = 0.5, 
+    label = ~date, 
+    popup = leafpop::popupTable(vols, 
+                                zcol = c('date', 'descrip', 'county', 'volest'), 
+                                row.numbers = F, 
+                                feature.id = F),
+    clusterOptions = markerClusterOptions()
+  )
+```
+
+```{r}
+tomap <- vols |> 
+  filter(yr == 2024 & mo %in% c(10, 11))
+```
+
+Map of incident reports where volume estimates were extracted, Oct-November 2024 (n = `r nrow(tomap)`). 
+
+```{r}
+mapbs |> 
+  addCircleMarkers(
+    data = tomap,
+    radius = 3, 
+    color = 'blue', 
+    stroke = FALSE, 
+    fillOpacity = 0.5, 
+    label = ~date, 
+    popup = leafpop::popupTable(tomap, 
+                                zcol = c('date', 'descrip', 'county', 'volest'), 
+                                row.numbers = F, 
+                                feature.id = F),
+    clusterOptions = markerClusterOptions()
+  )
+```
+
+Counts of reports with volume extracted by year and county.
 
 ```{r}
 toplo <- vols |>
-  group_by(modt) |>
+  group_by(yr, county) |>
+  summarise(cnt = n(), .groups = 'drop')
+tots <- sum(toplo$cnt)
+toplo_wide <- toplo |>
+  pivot_wider(
+    names_from = county,
+    values_from = cnt,
+    values_fill = 0
+  )
+
+plot_ly() |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Hillsborough`, name = "Hillsborough", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Manatee`, name = "Manatee", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Pasco`, name = "Pasco", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Pinellas`, name = "Pinellas",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Polk`, name = "Polk",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.1,
+      x = 0.5,
+      xanchor = "center"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Total reports extracted",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+Counts of reports with volume extracted by year, month, and county.
+
+```{r}
+toplo <- vols |>
+  group_by(modt, county) |>
+  summarise(cnt = n(), .groups = 'drop')
+tots <- sum(toplo$cnt)
+toplo_wide <- toplo |>
+  pivot_wider(
+    names_from = county,
+    values_from = cnt,
+    values_fill = 0
+  )
+
+plot_ly() |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Hillsborough`, name = "Hillsborough", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Manatee`, name = "Manatee", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Pasco`, name = "Pasco", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Pinellas`, name = "Pinellas",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Polk`, name = "Polk",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.1,
+      x = 0.5,
+      xanchor = "center"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Total reports extracted",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+Million gallons reported by year and county.
+
+```{r}
+toplo <- vols |>
+  group_by(yr, county) |>
   summarise(volest = sum(volest), .groups = 'drop') |>
-  mutate(volest = volest / 1000)
+  mutate(volest = volest / 1e6)
 tots <- nrow(vols)
+toplo_wide <- toplo |> 
+  pivot_wider(
+    names_from = county,
+    values_from = volest,
+    values_fill = 0
+  )
 
-ggplot(toplo, aes(x = modt, y = volest)) +
-  geom_bar(stat = 'identity', alpha = 0.7) +
-  thm +
-  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
-  theme(
-    axis.text.x = element_text(size = 7, angle = 45, hjust = 1)
-  ) +
-  labs(
-    x = NULL,
-    y = '1000 gallons spilled',
-    caption = paste('n = ', tots)
+plot_ly() |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Hillsborough`, name = "Hillsborough", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Manatee`, name = "Manatee", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Pasco`, name = "Pasco", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Pinellas`, name = "Pinellas",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`Polk`, name = "Polk",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.1,
+      x = 0.5,
+      xanchor = "center"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Million gallons reported",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
   )
 ```
+
+Million gallons reported by year, month, and county.
 
 ```{r}
 toplo <- vols |>
   group_by(modt, county) |>
   summarise(volest = sum(volest), .groups = 'drop') |>
-  mutate(volest = volest / 1000)
+  mutate(volest = volest / 1e6)
 tots <- nrow(vols)
-
-ggplot(toplo, aes(x = modt, y = volest, fill = county)) +
-  geom_bar(stat = 'identity', alpha = 0.7) +
-  thm +
-  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
-  theme(
-    axis.text.x = element_text(size = 7, angle = 45, hjust = 1)
-  ) +
-  labs(
-    x = NULL,
-    y = '1000 gallons spilled',
-    caption = paste('n = ', tots)
+toplo_wide <- toplo |> 
+  pivot_wider(
+    names_from = county,
+    values_from = volest,
+    values_fill = 0
   )
-```
 
-Because spill volumes from the "gallons" text string may be suspect, it may be more accurate to plot only those gallons reported with the "spill volume" text string.
-
-```{r}
-toplo <- vols |>
-  filter(hasvol) |>
-  group_by(modt, county) |>
-  summarise(volest = sum(volest), .groups = 'drop') |>
-  mutate(volest = volest / 1000)
-tots <- vols |>
-  filter(hasvol) |>
-  nrow()
-
-ggplot(toplo, aes(x = modt, y = volest)) +
-  geom_bar(stat = 'identity', alpha = 0.7) +
-  thm +
-  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
-  theme(
-    axis.text.x = element_text(size = 9, angle = 45, hjust = 1)
-  ) +
-  labs(
-    x = NULL,
-    y = '1000 gallons spilled',
-    caption = paste('n = ', tots)
-  )
-```
-
-```{r}
-toplo <- vols |>
-  filter(hasvol) |>
-  group_by(modt, county) |>
-  summarise(volest = sum(volest), .groups = 'drop') |>
-  mutate(volest = volest / 1000)
-tots <- vols |>
-  filter(hasvol) |>
-  nrow()
-
-ggplot(toplo, aes(x = modt, y = volest, fill = county)) +
-  geom_bar(stat = 'identity', alpha = 0.7) +
-  thm +
-  scale_x_date(date_labels = '%Y %m', date_breaks = '1 month') +
-  theme(
-    axis.text.x = element_text(size = 9, angle = 45, hjust = 1)
-  ) +
-  labs(
-    x = NULL,
-    y = '1000 gallons spilled',
-    caption = paste('n = ', tots)
+plot_ly() |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Hillsborough`, name = "Hillsborough", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Manatee`, name = "Manatee", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Pasco`, name = "Pasco", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Pinellas`, name = "Pinellas",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`Polk`, name = "Polk",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.1,
+      x = 0.5,
+      xanchor = "center"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Million gallons reported",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
   )
 ```
