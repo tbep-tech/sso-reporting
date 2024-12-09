@@ -3,6 +3,7 @@ title: "Tampa Bay SSO reporting"
 date: "`r Sys.Date()`"
 format:
   html:
+    toc: true
     code-fold: true
     code-copy: true
     code-link: true
@@ -28,7 +29,8 @@ library(leaflet)
 library(plotly)
 
 data(tbshed, package = 'tbeptools')
-load(here("data/rprt.RData"))
+load(here('data/rprt.RData'))
+load(here("data/vols.RData"))
 
 # ggplot base theme
 thm <- theme_minimal(base_size = 14) + 
@@ -49,7 +51,7 @@ The following is an evaluation of FDEP spill incident reports for Tampa Bay, ava
 
 ::: {.callout-warning}
 ## Caveats
-The source data is created via public input and has not been quality assured. All of the reported spill volumes extracted from the database have not been visually checked and some values may be erroneous.
+The source data is created via public input and has not been quality assured. All of the reported spill volumes extracted from the database have not been visually checked and some values may be erroneous.  Summaries by county refer only to geographic location, not the jurisdiction.
 :::
 
 The raw data have been filtered for the Tampa Bay watershed and only relevant columns have been retained.  County estimates refer to only the portion of each county in the watershed. The source code for creating the data object is [here](https://github.com/tbep-tech/sso-reporting/blob/main/R/dat_proc.R) and includes `r nrow(rprt)` records from `r min(rprt$date)` to `r max(rprt$date)`.
@@ -85,59 +87,10 @@ flowchart TD
     I -->|No| J[Keep Record]
 ```
 
-
-```{r}
-# volume extraction function
-# if volume spilled is reported, extract, regardless of whether other gallons are reported
-# otherwise, take max numeric value for gallons
-extract_fun <- function(descrip, hasgal, hasvol, hasmlg) {
-  if(hasvol)
-    out <- str_extract(descrip, "(?<=spill volume:\\s)\\d+|(?<=spill volume:\\sestimated\\s)\\d+")
-  if(hasgal & !hasvol)
-    out <- str_extract_all(descrip, "\\d+\\s*gallons?")[[1]] |>
-      str_extract("\\d+")
-  if(hasmlg & !hasgal & !hasvol){
-    out <- gsub('mg\\/l', '', descrip)
-    out <- str_extract_all(out, "\\d*\\.?\\d+\\s*mg[\\.\\s]?")[[1]] |>
-      str_extract("\\d*\\.?\\d+")
-  }
-  if(length(out) != 0 & !anyNA(out))
-    out <- as.numeric(out) |> max()
-  else
-    out <- NA
-  if(hasmlg & !hasgal & !hasvol)
-    out <- out * 1e6
-  return(out)
-}
-
-# extract volumes from descrip field
-vols <- rprt |>
-  filter(grepl('[0-9]', descrip)) |>
-  mutate(
-    descrip = gsub('\\,', '', descrip),
-    descrip = tolower(descrip),
-    hasgal = grepl('gallon', descrip),
-    hasvol = grepl('spill\\svolume:\\s', descrip),
-    hasmlg = grepl('^.*\\d+\\smg\\.|^.*\\d+\\smg\\s', descrip),
-    galcnt = str_count(descrip, 'gallon')
-  ) |>
-  filter(hasvol | hasgal | hasmlg) |>
-  mutate(
-    idx = row_number()
-  ) |>
-  mutate(
-    volest = extract_fun(descrip, hasgal, hasvol, hasmlg),
-    .by = idx
-  ) |>
-  filter(!is.na(volest)) |>
-  mutate(
-    modt = floor_date(date, unit = 'months')
-  )
-```
-
 Map of incident reports where volume estimates were extracted (n = `r nrow(vols)`, date ranges from `r min(vols$date)` to `r max(vols$date)`.
 
 ```{r}
+#| eval: false
 mapbs |> 
   addCircleMarkers(
     data = vols,
@@ -178,6 +131,8 @@ mapbs |>
   )
 ```
 
+## By county
+
 Counts of reports with volume extracted by year and county.
 
 ```{r}
@@ -210,7 +165,8 @@ plot_ly() |>
       orientation = "h",
       y = 1.1,
       x = 0.5,
-      xanchor = "center"
+      xanchor = "center", 
+      traceorder = "reversed"
     ),
     xaxis = list(
       title = "",
@@ -270,7 +226,8 @@ plot_ly() |>
       orientation = "h",
       y = 1.1,
       x = 0.5,
-      xanchor = "center"
+      xanchor = "center", 
+      traceorder = "reversed"
     ),
     xaxis = list(
       title = "",
@@ -331,7 +288,8 @@ plot_ly() |>
       orientation = "h",
       y = 1.1,
       x = 0.5,
-      xanchor = "center"
+      xanchor = "center", 
+      traceorder = "reversed"
     ),
     xaxis = list(
       title = "",
@@ -392,7 +350,272 @@ plot_ly() |>
       orientation = "h",
       y = 1.1,
       x = 0.5,
-      xanchor = "center"
+      xanchor = "center", 
+      traceorder = "reversed"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Million gallons reported",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+## By subwatershed
+
+Counts of reports with volume extracted by year and subwatershed.
+
+```{r}
+toplo <- vols |>
+  group_by(yr, bay_segment) |>
+  summarise(cnt = n(), .groups = 'drop')
+tots <- sum(toplo$cnt)
+toplo_wide <- toplo |>
+  pivot_wider(
+    names_from = bay_segment,
+    values_from = cnt,
+    values_fill = 0
+  )
+
+plot_ly() |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`OTB`, name = "Old Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`HB`, name = "Hillsborough Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`MTB`, name = "Middle Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`LTB`, name = "Lower Tampa Bay",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`BCB`, name = "Boca Ciega Bay",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`MR`, name = "Manatee River",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`TCB`, name = "Terra Ceia Bay",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.15,
+      x = 0.5,
+      xanchor = "center", 
+      traceorder = "reversed"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Total reports extracted",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+Counts of reports with volume extracted by year, month, and subwatershed.
+
+```{r}
+toplo <- vols |>
+  group_by(modt, bay_segment) |>
+  summarise(cnt = n(), .groups = 'drop')
+tots <- sum(toplo$cnt)
+toplo_wide <- toplo |>
+  pivot_wider(
+    names_from = bay_segment,
+    values_from = cnt,
+    values_fill = 0
+  )
+
+plot_ly() |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`OTB`, name = "Old Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`HB`, name = "Hillsborough Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`MTB`, name = "Middle Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`LTB`, name = "Lower Tampa Bay",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`BCB`, name = "Boca Ciega Bay",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`MR`, name = "Manatee River",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`TCB`, name = "Terra Ceia Bay",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.15,
+      x = 0.5,
+      xanchor = "center", 
+      traceorder = "reversed"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Total reports extracted",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+Million gallons reported by year and subwatershed.
+
+```{r}
+toplo <- vols |>
+  group_by(yr, bay_segment) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1e6)
+tots <- nrow(vols)
+toplo_wide <- toplo |> 
+  pivot_wider(
+    names_from = bay_segment,
+    values_from = volest,
+    values_fill = 0
+  )
+
+plot_ly() |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`OTB`, name = "Old Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`HB`, name = "Hillsborough Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`MTB`, name = "Middle Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`LTB`, name = "Lower Tampa Bay",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~yr, y = ~`BCB`, name = "Boca Ciega Bay",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`MR`, name = "Manatee River",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~yr, y = ~`TCB`, name = "Terra Ceia Bay",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.15,
+      x = 0.5,
+      xanchor = "center", 
+      traceorder = "reversed"
+    ),
+    xaxis = list(
+      title = "",
+      showgrid = FALSE,
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Million gallons reported",
+      showgrid = TRUE,
+      gridcolor = "lightgray",
+      zeroline = FALSE
+    ),
+    font = list(
+      size = 14
+    ),
+    annotations = list(
+      x = 1,
+      y = -0.09,
+      text = paste0("Total n = ", tots),
+      showarrow = FALSE,
+      xref = 'paper',
+      yref = 'paper',
+      font = list(size = 12)
+    )
+  )
+```
+
+Million gallons reported by year, month, and subwatershed.
+
+```{r}
+toplo <- vols |>
+  group_by(modt, bay_segment) |>
+  summarise(volest = sum(volest), .groups = 'drop') |>
+  mutate(volest = volest / 1e6)
+tots <- nrow(vols)
+toplo_wide <- toplo |> 
+  pivot_wider(
+    names_from = bay_segment,
+    values_from = volest,
+    values_fill = 0
+  )
+
+plot_ly() |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`OTB`, name = "Old Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`HB`, name = "Hillsborough Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`MTB`, name = "Middle Tampa Bay", 
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`LTB`, name = "Lower Tampa Bay",
+           opacity = 0.7) |>
+  add_bars(data = toplo_wide, x = ~modt, y = ~`BCB`, name = "Boca Ciega Bay",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`MR`, name = "Manatee River",
+           opacity = 0.7) |> 
+  add_bars(data = toplo_wide, x = ~modt, y = ~`TCB`, name = "Terra Ceia Bay",
+           opacity = 0.7) |> 
+  layout(
+    barmode = "stack",
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      y = 1.15,
+      x = 0.5,
+      xanchor = "center", 
+      traceorder = "reversed"
     ),
     xaxis = list(
       title = "",

@@ -1,4 +1,3 @@
-
 # View raw data from https://prodenv.dep.state.fl.us/DepPNP/reports/viewIncidentDetails
 # workflow adapted from https://github.com/tbep-tech/piney-point-analysis/blob/main/spills.Rmd
 # web services https://ca.dep.state.fl.us/arcgis/rest/services/External_Services/PNP/FeatureServer/1
@@ -8,9 +7,9 @@ library(here)
 library(httr)
 library(sf)
 
-data(tbshed, package = 'tbeptools')
-prj <- 4326
+source(here('R/funcs.R'))
 
+prj <- 4326
 
 # download raw data from web services ---------------------------------------------------------
 
@@ -89,7 +88,7 @@ rprt <- rawdat |>
   ) |> 
   filter(!is.na(Longitude) & !is.na(Latitude)) |> 
   st_as_sf(coords = c('Longitude', 'Latitude'), crs = prj) |> 
-  st_filter(tbshed) |> 
+  st_filter(tbeptools::tbshed) |> 
   mutate(
     date = as.POSIXct(date/1000, origin = "1970-01-01", tz = "UTC"),
     date = as.Date(date),
@@ -100,3 +99,35 @@ rprt <- rawdat |>
   distinct()
 
 save(rprt, file = here("data/rprt.RData"))
+
+# extract volumes -----------------------------------------------------------------------------
+
+load(file = here('data/rprt.RData'))
+
+# extract volumes from descrip field
+vols <- rprt |>
+  filter(grepl('[0-9]', descrip)) |>
+  mutate(
+    descrip = gsub('\\,', '', descrip),
+    descrip = tolower(descrip),
+    hasgal = grepl('gallon', descrip),
+    hasvol = grepl('spill\\svolume:\\s', descrip),
+    hasmlg = grepl('^.*\\d+\\smg\\.|^.*\\d+\\smg\\s', descrip),
+    galcnt = str_count(descrip, 'gallon')
+  ) |>
+  filter(hasvol | hasgal | hasmlg) |>
+  mutate(
+    idx = row_number()
+  ) |>
+  mutate(
+    volest = extract_fun(descrip, hasgal, hasvol, hasmlg),
+    .by = idx
+  ) |>
+  filter(!is.na(volest)) |>
+  mutate(
+    modt = floor_date(date, unit = 'months')
+  ) |> 
+  st_intersection(tbeptools::tbsegshed) |> 
+  select(-hasgal, -hasvol, -hasmlg, -galcnt, -idx, -long_name)
+
+save(vols, file = here('data/vols.RData'))
