@@ -90,7 +90,6 @@ flowchart TD
 Map of incident reports where volume estimates were extracted (n = `r nrow(vols)`, date ranges from `r min(vols$date)` to `r max(vols$date)`.
 
 ```{r}
-#| eval: false
 mapbs |> 
   addCircleMarkers(
     data = vols,
