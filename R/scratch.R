@@ -3,10 +3,12 @@ library(stringdist)
 library(tidytext)
 library(stringr)
 library(ggplot2)
+library(sf)
 
 load(file = here::here("data/vols.RData"))
 
 facilities <- vols %>% 
+  st_drop_geometry() %>%
   summarise(
     cnt = n(),
     .by = facility
