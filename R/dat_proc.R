@@ -13,7 +13,7 @@ prj <- 4326
 
 # download raw data from web services ---------------------------------------------------------
 
-# retrieved 2024-12-04
+# retrieved 2025-04-02
 
 base_url <- "https://ca.dep.state.fl.us/arcgis/rest/services/External_Services/PNP/FeatureServer/1/query"
 
@@ -96,6 +96,7 @@ rprt <- rawdat |>
     mo = month(date)
   ) |> 
   filter(county %in% c('Hillsborough', 'Pinellas', 'Manatee', 'Pasco', 'Polk')) |>
+  filter(yr < 2025) |> 
   distinct()
 
 save(rprt, file = here("data/rprt.RData"))
@@ -128,6 +129,7 @@ vols <- rprt |>
     modt = floor_date(date, unit = 'months')
   ) |> 
   st_intersection(tbeptools::tbsegshed) |> 
-  select(-hasgal, -hasvol, -hasmlg, -galcnt, -idx, -long_name)
+  select(-hasgal, -hasvol, -hasmlg, -galcnt, -idx, -long_name) |> 
+  filter(yr < 2025)
 
 save(vols, file = here('data/vols.RData'))
