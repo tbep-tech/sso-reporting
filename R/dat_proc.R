@@ -3,6 +3,7 @@
 # web services https://ca.dep.state.fl.us/arcgis/rest/services/External_Services/PNP/FeatureServer/1
 
 library(tidyverse)
+library(tbeptools)
 library(here)
 library(httr)
 library(sf)
@@ -13,11 +14,26 @@ prj <- 4326
 
 # download raw data from web services ---------------------------------------------------------
 
-# retrieved 2025-04-02
+# retrieved 2025-11-21
 
 base_url <- "https://ca.dep.state.fl.us/arcgis/rest/services/External_Services/PNP/FeatureServer/1/query"
 
-get_dat <- function(offset = 0, max_rec) {
+get_dat <- function(offset = 0, max_rec = 1000, bbox = NULL) {
+
+  # If bbox is provided as an sf object, convert to st_bbox
+  if (!is.null(bbox)) {
+    if (inherits(bbox, "sf") || inherits(bbox, "sfc")) {
+      bb <- st_bbox(bbox)
+    } else if (inherits(bbox, "bbox")) {
+      bb <- bbox
+    } else {
+      stop("bbox must be an sf object, sfc object, or st_bbox")
+    }
+
+    bbox_str <- paste(bb$xmin, bb$ymin, bb$xmax, bb$ymax, sep = ",")
+  }
+
+  # Base query parameters
   query_params <- list(
     where = "1=1",
     outFields = "*",
@@ -26,28 +42,36 @@ get_dat <- function(offset = 0, max_rec) {
     f = "geojson"
   )
 
+  # Add bbox parameters if provided
+  if (!is.null(bbox)) {
+    query_params$geometry        <- bbox_str
+    query_params$geometryType    <- "esriGeometryEnvelope"
+    query_params$spatialRel      <- "esriSpatialRelIntersects"
+    query_params$inSR            <- 4326
+  }
+
+  # request
   req <- GET(base_url, query = query_params)
+
   dat <- st_read(rawToChar(req$content), quiet = TRUE)
-  
-  out <- list(
+
+  list(
     dat = dat,
     n_rec = nrow(dat)
   )
-  
-  return(out)
-  
 }
 
 # Retrieve data dynamically
 all_dat <- NULL
 offset <- 0
 max_rec <- 10000
+bbox <- st_bbox(tbeptools::tbshed)
 
 repeat {
   
   cat('offset', offset, '\n')
   
-  result <- get_dat(offset, max_rec)
+  result <- get_dat(offset, max_rec, bbox = bbox)
   all_dat <- rbind(all_dat, result$dat)
   
   if (result$n_rec < max_rec){
@@ -96,7 +120,6 @@ rprt <- rawdat |>
     mo = month(date)
   ) |> 
   filter(county %in% c('Hillsborough', 'Pinellas', 'Manatee', 'Pasco', 'Polk')) |>
-  filter(yr < 2025) |> 
   distinct()
 
 save(rprt, file = here("data/rprt.RData"))
@@ -129,7 +152,6 @@ vols <- rprt |>
     modt = floor_date(date, unit = 'months')
   ) |> 
   st_intersection(tbeptools::tbsegshed) |> 
-  select(-hasgal, -hasvol, -hasmlg, -galcnt, -idx, -long_name) |> 
-  filter(yr < 2025)
+  select(-hasgal, -hasvol, -hasmlg, -galcnt, -idx, -long_name)
 
 save(vols, file = here('data/vols.RData'))
